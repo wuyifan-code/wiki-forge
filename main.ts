@@ -75,7 +75,7 @@ export default class LLMWikiForgePlugin extends Plugin {
         }
     }
 
-    async handleLint(onUpdate: (text: string) => void) {
+    async handleLint(onChunk: (text: string) => void) {
         try {
             const { callLLMForLint } = await import('./llm');
             let indexContent = "Index file not found or empty.";
@@ -84,19 +84,85 @@ export default class LLMWikiForgePlugin extends Plugin {
             if (indexFile) {
                 indexContent = await this.app.vault.read(indexFile);
             } else {
-                onUpdate("No index file found to analyze.");
+                onChunk("No index file found to analyze.");
                 return;
             }
 
-            const response = await callLLMForLint(this.settings, indexContent);
-            onUpdate(response);
+            await callLLMForLint(this.settings, indexContent, onChunk);
         } catch(e) {
             console.error("Lint error:", e);
-            onUpdate(`Error: ${e.message}`);
+            onChunk(`Error: ${e.message}`);
         }
     }
 
-    async handleQuery(query: string, onUpdate: (text: string) => void) {
+    async ingestQueryToWiki(queryText: string, aiResponse: string, onStatus: (status: string) => void) {
+        onStatus("Creating source from chat...");
+        try {
+            const { callLLMForIngest } = await import('./llm');
+
+            // We simulate a source file using the chat context
+            const simulatedFilename = `chat-${Date.now()}.md`;
+            const simulatedContent = `## User Query\n${queryText}\n\n## AI Response\n${aiResponse}`;
+
+            onStatus("Calling LLM to index chat...");
+            const result = await callLLMForIngest(this.settings, simulatedContent, simulatedFilename, []);
+
+            onStatus("Writing to Wiki...");
+            const wikiFolderPath = this.settings.wikiFolder;
+            if (!(this.app.vault.getAbstractFileByPath(wikiFolderPath))) {
+                await this.app.vault.createFolder(wikiFolderPath);
+            }
+
+            const newFilePath = `${wikiFolderPath}/${result.suggestedFilename}.md`;
+            let wikiFile = this.app.vault.getAbstractFileByPath(newFilePath) as TFile;
+            if (wikiFile) {
+                await this.app.vault.modify(wikiFile, result.wikiContent);
+            } else {
+                wikiFile = await this.app.vault.create(newFilePath, result.wikiContent);
+            }
+
+            const logFilePath = this.settings.logFile;
+            let logFile = this.app.vault.getAbstractFileByPath(logFilePath) as TFile;
+            const logLine = result.logEntry.replace('[YYYY-MM-DD]', new Date().toISOString().split('T')[0]) + '\n';
+            if (logFile) {
+                await this.app.vault.append(logFile, logLine);
+            } else {
+                const logParts = logFilePath.split('/');
+                if (logParts.length > 1) {
+                    const logFolder = logParts.slice(0, -1).join('/');
+                    if (!(this.app.vault.getAbstractFileByPath(logFolder))) {
+                        await this.app.vault.createFolder(logFolder);
+                    }
+                }
+                await this.app.vault.create(logFilePath, "# Ingestion Log\n\n" + logLine);
+            }
+
+            const indexFilePath = this.settings.indexFile;
+            let indexFile = this.app.vault.getAbstractFileByPath(indexFilePath) as TFile;
+            const indexLine = result.indexEntry + '\n';
+            if (indexFile) {
+                await this.app.vault.append(indexFile, indexLine);
+            } else {
+                const indexParts = indexFilePath.split('/');
+                if (indexParts.length > 1) {
+                    const indexFolder = indexParts.slice(0, -1).join('/');
+                    if (!(this.app.vault.getAbstractFileByPath(indexFolder))) {
+                        await this.app.vault.createFolder(indexFolder);
+                    }
+                }
+                await this.app.vault.create(indexFilePath, "# Wiki Index\n\n" + indexLine);
+            }
+
+            onStatus(`Saved to [[${result.suggestedFilename}]]`);
+            new Notice(`Successfully ingested chat into Wiki`);
+        } catch (e) {
+            console.error("Chat ingestion error:", e);
+            onStatus("Failed");
+            new Notice(`Failed to ingest chat: ${e.message}`);
+        }
+    }
+
+    async handleQuery(query: string, onChunk: (text: string) => void) {
         try {
             const { callLLMForQuery } = await import('./llm');
             let indexContent = "Index file not found or empty.";
@@ -106,11 +172,10 @@ export default class LLMWikiForgePlugin extends Plugin {
                 indexContent = await this.app.vault.read(indexFile);
             }
 
-            const response = await callLLMForQuery(this.settings, query, indexContent);
-            onUpdate(response);
+            await callLLMForQuery(this.settings, query, indexContent, onChunk);
         } catch(e) {
             console.error("Query error:", e);
-            onUpdate(`Error: ${e.message}`);
+            onChunk(`Error: ${e.message}`);
         }
     }
 
@@ -120,9 +185,13 @@ export default class LLMWikiForgePlugin extends Plugin {
         try {
             const content = await this.app.vault.read(file);
             const { callLLMForIngest } = await import('./llm');
+            const { extractImagesFromMarkdown } = await import('./utils');
+
+            if(onStatus) onStatus("Extracting Images...");
+            const images = await extractImagesFromMarkdown(this.app, content, file.path);
 
             if(onStatus) onStatus("Calling LLM...");
-            const result = await callLLMForIngest(this.settings, content, file.name);
+            const result = await callLLMForIngest(this.settings, content, file.name, images);
 
             if(onStatus) onStatus("Writing to Wiki...");
             // 1. Ensure wiki folder exists

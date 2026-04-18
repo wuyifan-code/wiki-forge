@@ -112,18 +112,38 @@ export class LLMWikiView extends ItemView {
         }
     }
 
-    chatHistory: {role: string, content: string}[] = [];
+    chatHistory: {role: string, content: string, ingested?: boolean}[] = [];
 
     async renderQueryTab(container: HTMLElement) {
         container.empty();
 
         const messagesContainer = container.createDiv({ cls: "llm-wiki-chat-messages" });
 
-        for (const msg of this.chatHistory) {
-            messagesContainer.createDiv({
+        const renderMessage = (msg: {role: string, content: string, ingested?: boolean}, index: number) => {
+            const msgWrapper = messagesContainer.createDiv({ cls: "llm-wiki-chat-message-wrapper" });
+            const msgDiv = msgWrapper.createDiv({
                 cls: `llm-wiki-chat-message ${msg.role}`,
                 text: msg.content
             });
+
+            if (msg.role === 'assistant') {
+                const actionDiv = msgWrapper.createDiv({ cls: "llm-wiki-chat-actions" });
+                const saveBtn = actionDiv.createEl("button", { text: msg.ingested ? "Ingested" : "Save to Wiki" });
+                saveBtn.disabled = !!msg.ingested;
+                saveBtn.onclick = async () => {
+                    saveBtn.disabled = true;
+                    const prevUserMsg = this.chatHistory[index - 1]?.content || "Unknown query";
+                    await this.plugin.ingestQueryToWiki(prevUserMsg, msg.content, (status) => {
+                        saveBtn.innerText = status;
+                    });
+                    msg.ingested = true;
+                };
+            }
+            return msgDiv;
+        };
+
+        for (let i = 0; i < this.chatHistory.length; i++) {
+            renderMessage(this.chatHistory[i], i);
         }
 
         const inputContainer = container.createDiv({ cls: "llm-wiki-chat-input-container" });
@@ -146,17 +166,27 @@ export class LLMWikiView extends ItemView {
             sendBtn.disabled = true;
 
             this.chatHistory.push({ role: 'user', content: text });
-            messagesContainer.createDiv({ cls: "llm-wiki-chat-message user", text });
+            const newHistoryIdx = this.chatHistory.length - 1;
+            renderMessage(this.chatHistory[newHistoryIdx], newHistoryIdx);
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
 
-            const assistantMsgDiv = messagesContainer.createDiv({ cls: "llm-wiki-chat-message assistant", text: "Thinking..." });
+            // Create temporary wrapper for streaming response
+            const msgWrapper = messagesContainer.createDiv({ cls: "llm-wiki-chat-message-wrapper" });
+            const assistantMsgDiv = msgWrapper.createDiv({ cls: "llm-wiki-chat-message assistant", text: "" });
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
 
-            await this.plugin.handleQuery(text, (response) => {
-                assistantMsgDiv.innerText = response;
-                this.chatHistory.push({ role: 'assistant', content: response });
+            let fullResponse = "";
+
+            await this.plugin.handleQuery(text, (chunk) => {
+                fullResponse += chunk;
+                assistantMsgDiv.innerText = fullResponse;
                 messagesContainer.scrollTop = messagesContainer.scrollHeight;
             });
+
+            msgWrapper.remove(); // Remove temporary wrapper
+
+            this.chatHistory.push({ role: 'assistant', content: fullResponse });
+            renderMessage(this.chatHistory[this.chatHistory.length - 1], this.chatHistory.length - 1);
 
             sendBtn.disabled = false;
         };
@@ -190,10 +220,12 @@ export class LLMWikiView extends ItemView {
             runBtn.disabled = true;
             runBtn.innerText = "Analyzing...";
             resultsContainer.style.display = "block";
-            resultsContainer.innerText = "Reading index and consulting LLM...";
+            resultsContainer.innerText = "";
+            let fullLint = "";
 
-            await this.plugin.handleLint((response) => {
-                resultsContainer.innerText = response;
+            await this.plugin.handleLint((chunk) => {
+                fullLint += chunk;
+                resultsContainer.innerText = fullLint;
             });
 
             runBtn.disabled = false;

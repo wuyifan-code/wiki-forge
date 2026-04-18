@@ -26,21 +26,23 @@ You should return your answer EXACTLY as a JSON object with four keys:
 CRITICAL: Return ONLY valid JSON. Do not include markdown codeblocks (\`\`\`json) or any conversational text before or after the JSON.
 `;
 
-export async function callLLMForIngest(settings: LLMWikiForgeSettings, sourceContent: string, sourceFilename: string): Promise<IngestResult> {
+import { ImageContent } from './utils';
+
+export async function callLLMForIngest(settings: LLMWikiForgeSettings, sourceContent: string, sourceFilename: string, images: ImageContent[] = []): Promise<IngestResult> {
     const userPrompt = `Source filename: ${sourceFilename}\n\nSource Content:\n${sourceContent}`;
 
     if (settings.provider === 'openai') {
-        return callOpenAIIngest(settings, userPrompt);
+        return callOpenAIIngest(settings, userPrompt, images);
     } else if (settings.provider === 'anthropic') {
-        return callAnthropicIngest(settings, userPrompt);
+        return callAnthropicIngest(settings, userPrompt, images);
     } else if (settings.provider === 'ollama') {
-        return callOllamaIngest(settings, userPrompt);
+        return callOllamaIngest(settings, userPrompt, images);
     } else {
         throw new Error(`Unsupported provider: ${settings.provider}`);
     }
 }
 
-export async function callLLMForLint(settings: LLMWikiForgeSettings, indexContent: string): Promise<string> {
+export async function callLLMForLint(settings: LLMWikiForgeSettings, indexContent: string, onChunk: (text: string) => void): Promise<string> {
     const systemPrompt = `You are an expert knowledge base health inspector. You are given the current index of the user's Obsidian wiki.
 Your job is to look for:
 - Potential contradictions between pages
@@ -50,18 +52,20 @@ Your job is to look for:
 
 Provide a bulleted list of actionable recommendations. Be concise and use standard Markdown.`;
 
+    const userPrompt = "Please review the following index and provide health recommendations:\n" + indexContent;
+
     if (settings.provider === 'openai') {
-        return callOpenAIQuery(settings, systemPrompt, "Please review the following index and provide health recommendations:\n" + indexContent);
+        return callOpenAIStream(settings, systemPrompt, userPrompt, onChunk);
     } else if (settings.provider === 'anthropic') {
-        return callAnthropicQuery(settings, systemPrompt, "Please review the following index and provide health recommendations:\n" + indexContent);
+        return callAnthropicStream(settings, systemPrompt, userPrompt, onChunk);
     } else if (settings.provider === 'ollama') {
-        return callOllamaQuery(settings, systemPrompt, "Please review the following index and provide health recommendations:\n" + indexContent);
+        return callOllamaStream(settings, systemPrompt, userPrompt, onChunk);
     } else {
         throw new Error(`Unsupported provider: ${settings.provider}`);
     }
 }
 
-export async function callLLMForQuery(settings: LLMWikiForgeSettings, query: string, indexContent: string): Promise<string> {
+export async function callLLMForQuery(settings: LLMWikiForgeSettings, query: string, indexContent: string, onChunk: (text: string) => void): Promise<string> {
     const systemPrompt = `You are an expert knowledge base assistant. You are given the current index of the user's Obsidian wiki.
 Your job is to answer the user's query based on the index or general knowledge, and optionally suggest they create new pages.
 Whenever you mention a topic that exists in the index, use Obsidian [[Wikilinks]].
@@ -71,18 +75,18 @@ ${indexContent}
 `;
 
     if (settings.provider === 'openai') {
-        return callOpenAIQuery(settings, systemPrompt, query);
+        return callOpenAIStream(settings, systemPrompt, query, onChunk);
     } else if (settings.provider === 'anthropic') {
-        return callAnthropicQuery(settings, systemPrompt, query);
+        return callAnthropicStream(settings, systemPrompt, query, onChunk);
     } else if (settings.provider === 'ollama') {
-        return callOllamaQuery(settings, systemPrompt, query);
+        return callOllamaStream(settings, systemPrompt, query, onChunk);
     } else {
         throw new Error(`Unsupported provider: ${settings.provider}`);
     }
 }
 
 
-async function callOllamaIngest(settings: LLMWikiForgeSettings, userPrompt: string): Promise<IngestResult> {
+async function callOllamaIngest(settings: LLMWikiForgeSettings, userPrompt: string, images: ImageContent[]): Promise<IngestResult> {
     let endpoint = settings.ollamaEndpoint || 'http://localhost:11434';
     if (endpoint.endsWith('/')) {
         endpoint = endpoint.slice(0, -1);
@@ -98,7 +102,11 @@ async function callOllamaIngest(settings: LLMWikiForgeSettings, userPrompt: stri
             model: settings.model,
             messages: [
                 { role: 'system', content: INGEST_SYSTEM_PROMPT },
-                { role: 'user', content: userPrompt }
+                {
+                    role: 'user',
+                    content: userPrompt,
+                    images: images.length > 0 ? images.map(img => img.base64) : undefined
+                }
             ],
             stream: false,
             format: "json",
@@ -121,7 +129,7 @@ async function callOllamaIngest(settings: LLMWikiForgeSettings, userPrompt: stri
     }
 }
 
-async function callOpenAIIngest(settings: LLMWikiForgeSettings, userPrompt: string): Promise<IngestResult> {
+async function callOpenAIIngest(settings: LLMWikiForgeSettings, userPrompt: string, images: ImageContent[]): Promise<IngestResult> {
     if (!settings.apiKey) throw new Error("OpenAI API key is missing");
 
     const response = await requestUrl({
@@ -135,7 +143,16 @@ async function callOpenAIIngest(settings: LLMWikiForgeSettings, userPrompt: stri
             model: settings.model,
             messages: [
                 { role: 'system', content: INGEST_SYSTEM_PROMPT },
-                { role: 'user', content: userPrompt }
+                {
+                    role: 'user',
+                    content: images.length > 0 ? [
+                        { type: "text", text: userPrompt },
+                        ...images.map(img => ({
+                            type: "image_url",
+                            image_url: { url: `data:${img.mimeType};base64,${img.base64}` }
+                        }))
+                    ] : userPrompt
+                }
             ],
             response_format: { type: "json_object" },
             temperature: 0.2
@@ -155,7 +172,7 @@ async function callOpenAIIngest(settings: LLMWikiForgeSettings, userPrompt: stri
     }
 }
 
-async function callAnthropicIngest(settings: LLMWikiForgeSettings, userPrompt: string): Promise<IngestResult> {
+async function callAnthropicIngest(settings: LLMWikiForgeSettings, userPrompt: string, images: ImageContent[]): Promise<IngestResult> {
     if (!settings.apiKey) throw new Error("Anthropic API key is missing");
 
     const response = await requestUrl({
@@ -170,7 +187,20 @@ async function callAnthropicIngest(settings: LLMWikiForgeSettings, userPrompt: s
             model: settings.model,
             system: INGEST_SYSTEM_PROMPT,
             messages: [
-                { role: 'user', content: userPrompt }
+                {
+                    role: 'user',
+                    content: images.length > 0 ? [
+                        ...images.map(img => ({
+                            type: "image",
+                            source: {
+                                type: "base64",
+                                media_type: img.mimeType,
+                                data: img.base64
+                            }
+                        })),
+                        { type: "text", text: userPrompt }
+                    ] : userPrompt
+                }
             ],
             max_tokens: 4000,
             temperature: 0.2
@@ -200,14 +230,13 @@ async function callAnthropicIngest(settings: LLMWikiForgeSettings, userPrompt: s
     }
 }
 
-async function callOllamaQuery(settings: LLMWikiForgeSettings, systemPrompt: string, userPrompt: string): Promise<string> {
+async function callOllamaStream(settings: LLMWikiForgeSettings, systemPrompt: string, userPrompt: string, onChunk: (text: string) => void): Promise<string> {
     let endpoint = settings.ollamaEndpoint || 'http://localhost:11434';
     if (endpoint.endsWith('/')) {
         endpoint = endpoint.slice(0, -1);
     }
 
-    const response = await requestUrl({
-        url: `${endpoint}/api/chat`,
+    const response = await fetch(`${endpoint}/api/chat`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json'
@@ -218,25 +247,31 @@ async function callOllamaQuery(settings: LLMWikiForgeSettings, systemPrompt: str
                 { role: 'system', content: systemPrompt },
                 { role: 'user', content: userPrompt }
             ],
-            stream: false,
+            stream: true,
             options: {
                 temperature: 0.7
             }
         })
     });
 
-    if (response.status !== 200) {
-        throw new Error(`Ollama Error: ${response.text}`);
+    if (!response.ok) {
+        throw new Error(`Ollama Error: ${response.statusText}`);
     }
 
-    return response.json.message.content;
+    return readStream(response, onChunk, (chunk) => {
+        try {
+            const data = JSON.parse(chunk);
+            return data.message?.content || "";
+        } catch (e) {
+            return "";
+        }
+    });
 }
 
-async function callOpenAIQuery(settings: LLMWikiForgeSettings, systemPrompt: string, userPrompt: string): Promise<string> {
+async function callOpenAIStream(settings: LLMWikiForgeSettings, systemPrompt: string, userPrompt: string, onChunk: (text: string) => void): Promise<string> {
     if (!settings.apiKey) throw new Error("OpenAI API key is missing");
 
-    const response = await requestUrl({
-        url: 'https://api.openai.com/v1/chat/completions',
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -248,27 +283,32 @@ async function callOpenAIQuery(settings: LLMWikiForgeSettings, systemPrompt: str
                 { role: 'system', content: systemPrompt },
                 { role: 'user', content: userPrompt }
             ],
-            temperature: 0.7
+            temperature: 0.7,
+            stream: true
         })
     });
 
-    if (response.status !== 200) {
-        throw new Error(`OpenAI Error: ${response.text}`);
+    if (!response.ok) {
+        throw new Error(`OpenAI Error: ${response.statusText}`);
     }
 
-    return response.json.choices[0].message.content;
+    return readSSEStream(response, onChunk, (data) => {
+        return data.choices[0]?.delta?.content || "";
+    });
 }
 
-async function callAnthropicQuery(settings: LLMWikiForgeSettings, systemPrompt: string, userPrompt: string): Promise<string> {
+async function callAnthropicStream(settings: LLMWikiForgeSettings, systemPrompt: string, userPrompt: string, onChunk: (text: string) => void): Promise<string> {
     if (!settings.apiKey) throw new Error("Anthropic API key is missing");
 
-    const response = await requestUrl({
-        url: 'https://api.anthropic.com/v1/messages',
+    // Note: Anthropic streaming requires slightly different headers, and some users might experience CORS issues using native fetch in Obsidian.
+    // If CORS is an issue, Obsidian's requestUrl doesn't support streaming well. We use native fetch here.
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             'x-api-key': settings.apiKey,
-            'anthropic-version': '2023-06-01'
+            'anthropic-version': '2023-06-01',
+            'anthropic-dangerous-direct-browser-access': 'true' // Need this to skip CORS preflight block in some Obsidian environments
         },
         body: JSON.stringify({
             model: settings.model,
@@ -277,13 +317,85 @@ async function callAnthropicQuery(settings: LLMWikiForgeSettings, systemPrompt: 
                 { role: 'user', content: userPrompt }
             ],
             max_tokens: 4000,
-            temperature: 0.7
+            temperature: 0.7,
+            stream: true
         })
     });
 
-    if (response.status !== 200) {
-        throw new Error(`Anthropic Error: ${response.text}`);
+    if (!response.ok) {
+        throw new Error(`Anthropic Error: ${response.statusText}`);
     }
 
-    return response.json.content[0].text;
+    return readSSEStream(response, onChunk, (data) => {
+        if (data.type === 'content_block_delta' && data.delta?.type === 'text_delta') {
+            return data.delta.text || "";
+        }
+        return "";
+    });
+}
+
+// Utility to read NDJSON streams (Ollama)
+async function readStream(response: Response, onChunk: (text: string) => void, parseChunk: (chunk: string) => string): Promise<string> {
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let fullText = "";
+
+    if (!reader) throw new Error("No reader available");
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+
+        const lines = chunk.split('\n');
+        for (const line of lines) {
+            if (line.trim()) {
+                const text = parseChunk(line);
+                if (text) {
+                    fullText += text;
+                    onChunk(text);
+                }
+            }
+        }
+    }
+    return fullText;
+}
+
+// Utility to read SSE streams (OpenAI/Anthropic)
+async function readSSEStream(response: Response, onChunk: (text: string) => void, parseData: (data: any) => string): Promise<string> {
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let fullText = "";
+    let buffer = "";
+
+    if (!reader) throw new Error("No reader available");
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let newlineIndex;
+        while ((newlineIndex = buffer.indexOf('\n')) >= 0) {
+            const line = buffer.slice(0, newlineIndex).trim();
+            buffer = buffer.slice(newlineIndex + 1);
+
+            if (line.startsWith('data: ')) {
+                const dataStr = line.slice(6);
+                if (dataStr === '[DONE]') continue;
+
+                try {
+                    const data = JSON.parse(dataStr);
+                    const text = parseData(data);
+                    if (text) {
+                        fullText += text;
+                        onChunk(text);
+                    }
+                } catch (e) {
+                    // Ignore parsing errors for incomplete chunks
+                }
+            }
+        }
+    }
+    return fullText;
 }

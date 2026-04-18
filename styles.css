@@ -39,20 +39,54 @@
     margin-bottom: 16px;
     max-height: 60vh;
     overflow-y: auto;
+    padding-right: 4px;
+}
+
+.llm-wiki-chat-message-wrapper {
+    display: flex;
+    flex-direction: column;
 }
 
 .llm-wiki-chat-message {
-    padding: 8px;
+    padding: 10px 14px;
     border-radius: 8px;
     background-color: var(--background-secondary);
+    line-height: 1.5;
+    word-break: break-word;
 }
 
 .llm-wiki-chat-message.user {
-    background-color: var(--background-modifier-hover);
+    background-color: var(--interactive-accent);
+    color: var(--text-on-accent);
     align-self: flex-end;
+    max-width: 85%;
+    border-bottom-right-radius: 2px;
 }
 
 .llm-wiki-chat-message.assistant {
     background-color: var(--background-primary);
     border: 1px solid var(--background-modifier-border);
+    align-self: flex-start;
+    max-width: 95%;
+    border-top-left-radius: 2px;
+}
+
+.llm-wiki-chat-actions {
+    display: flex;
+    justify-content: flex-start;
+    margin-top: 4px;
+}
+
+.llm-wiki-chat-actions button {
+    font-size: 0.8em;
+    padding: 2px 8px;
+    background-color: transparent;
+    border: 1px solid var(--background-modifier-border);
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.llm-wiki-chat-actions button:hover {
+    color: var(--text-normal);
+    border-color: var(--text-muted);
 }
