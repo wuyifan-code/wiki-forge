@@ -1,0 +1,6 @@
+{
+  "name": "LLM Wiki Agent",
+  "description": "An Agent based on Karpathy's personal note-taking pipeline that incrementally structures notes into an LLM wiki.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
