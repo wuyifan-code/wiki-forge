@@ -1,0 +1,10 @@
+{
+	"id": "llm-wiki-forge",
+	"name": "LLM Wiki Forge",
+	"version": "1.0.0",
+	"minAppVersion": "1.0.0",
+	"description": "Implement Karpathy's LLM Wiki note-taking method. Ingest sources to build a structured wiki with LLM.",
+	"author": "Obsidian User",
+	"authorUrl": "",
+	"isDesktopOnly": false
+}
