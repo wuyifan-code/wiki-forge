@@ -1,0 +1,58 @@
+.llm-wiki-forge-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid var(--background-modifier-border);
+    padding-bottom: 8px;
+}
+
+.llm-wiki-forge-tab {
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+    background-color: transparent;
+    color: var(--text-muted);
+}
+
+.llm-wiki-forge-tab.active {
+    background-color: var(--interactive-accent);
+    color: var(--text-on-accent);
+}
+
+.llm-wiki-forge-tab-content {
+    display: none;
+}
+
+.llm-wiki-forge-tab-content.active {
+    display: block;
+}
+
+.llm-wiki-source-item {
+    padding: 6px 0;
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.llm-wiki-chat-messages {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 16px;
+    max-height: 60vh;
+    overflow-y: auto;
+}
+
+.llm-wiki-chat-message {
+    padding: 8px;
+    border-radius: 8px;
+    background-color: var(--background-secondary);
+}
+
+.llm-wiki-chat-message.user {
+    background-color: var(--background-modifier-hover);
+    align-self: flex-end;
+}
+
+.llm-wiki-chat-message.assistant {
+    background-color: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+}

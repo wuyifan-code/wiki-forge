@@ -27,7 +27,9 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 // llm.ts
 var llm_exports = {};
 __export(llm_exports, {
-  callLLMForIngest: () => callLLMForIngest
+  callLLMForIngest: () => callLLMForIngest,
+  callLLMForLint: () => callLLMForLint,
+  callLLMForQuery: () => callLLMForQuery
 });
 async function callLLMForIngest(settings, sourceContent, sourceFilename) {
   const userPrompt = `Source filename: ${sourceFilename}
@@ -35,14 +37,88 @@ async function callLLMForIngest(settings, sourceContent, sourceFilename) {
 Source Content:
 ${sourceContent}`;
   if (settings.provider === "openai") {
-    return callOpenAI(settings, userPrompt);
+    return callOpenAIIngest(settings, userPrompt);
   } else if (settings.provider === "anthropic") {
-    return callAnthropic(settings, userPrompt);
+    return callAnthropicIngest(settings, userPrompt);
+  } else if (settings.provider === "ollama") {
+    return callOllamaIngest(settings, userPrompt);
   } else {
     throw new Error(`Unsupported provider: ${settings.provider}`);
   }
 }
-async function callOpenAI(settings, userPrompt) {
+async function callLLMForLint(settings, indexContent) {
+  const systemPrompt = `You are an expert knowledge base health inspector. You are given the current index of the user's Obsidian wiki.
+Your job is to look for:
+- Potential contradictions between pages
+- Orphan concepts that should probably have their own pages
+- Missing cross-references
+- Broad topics that should be broken down
+
+Provide a bulleted list of actionable recommendations. Be concise and use standard Markdown.`;
+  if (settings.provider === "openai") {
+    return callOpenAIQuery(settings, systemPrompt, "Please review the following index and provide health recommendations:\n" + indexContent);
+  } else if (settings.provider === "anthropic") {
+    return callAnthropicQuery(settings, systemPrompt, "Please review the following index and provide health recommendations:\n" + indexContent);
+  } else if (settings.provider === "ollama") {
+    return callOllamaQuery(settings, systemPrompt, "Please review the following index and provide health recommendations:\n" + indexContent);
+  } else {
+    throw new Error(`Unsupported provider: ${settings.provider}`);
+  }
+}
+async function callLLMForQuery(settings, query, indexContent) {
+  const systemPrompt = `You are an expert knowledge base assistant. You are given the current index of the user's Obsidian wiki.
+Your job is to answer the user's query based on the index or general knowledge, and optionally suggest they create new pages.
+Whenever you mention a topic that exists in the index, use Obsidian [[Wikilinks]].
+
+Here is the current Wiki Index:
+${indexContent}
+`;
+  if (settings.provider === "openai") {
+    return callOpenAIQuery(settings, systemPrompt, query);
+  } else if (settings.provider === "anthropic") {
+    return callAnthropicQuery(settings, systemPrompt, query);
+  } else if (settings.provider === "ollama") {
+    return callOllamaQuery(settings, systemPrompt, query);
+  } else {
+    throw new Error(`Unsupported provider: ${settings.provider}`);
+  }
+}
+async function callOllamaIngest(settings, userPrompt) {
+  let endpoint = settings.ollamaEndpoint || "http://localhost:11434";
+  if (endpoint.endsWith("/")) {
+    endpoint = endpoint.slice(0, -1);
+  }
+  const response = await (0, import_obsidian2.requestUrl)({
+    url: `${endpoint}/api/chat`,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: settings.model,
+      messages: [
+        { role: "system", content: INGEST_SYSTEM_PROMPT },
+        { role: "user", content: userPrompt }
+      ],
+      stream: false,
+      format: "json",
+      options: {
+        temperature: 0.2
+      }
+    })
+  });
+  if (response.status !== 200) {
+    throw new Error(`Ollama Error: ${response.text}`);
+  }
+  const data = response.json;
+  const content = data.message.content;
+  try {
+    return JSON.parse(content);
+  } catch (e) {
+    throw new Error("Failed to parse JSON from Ollama response");
+  }
+}
+async function callOpenAIIngest(settings, userPrompt) {
   if (!settings.apiKey)
     throw new Error("OpenAI API key is missing");
   const response = await (0, import_obsidian2.requestUrl)({
@@ -55,7 +131,7 @@ async function callOpenAI(settings, userPrompt) {
     body: JSON.stringify({
       model: settings.model,
       messages: [
-        { role: "system", content: SYSTEM_PROMPT },
+        { role: "system", content: INGEST_SYSTEM_PROMPT },
         { role: "user", content: userPrompt }
       ],
       response_format: { type: "json_object" },
@@ -73,7 +149,7 @@ async function callOpenAI(settings, userPrompt) {
     throw new Error("Failed to parse JSON from OpenAI response");
   }
 }
-async function callAnthropic(settings, userPrompt) {
+async function callAnthropicIngest(settings, userPrompt) {
   if (!settings.apiKey)
     throw new Error("Anthropic API key is missing");
   const response = await (0, import_obsidian2.requestUrl)({
@@ -86,7 +162,7 @@ async function callAnthropic(settings, userPrompt) {
     },
     body: JSON.stringify({
       model: settings.model,
-      system: SYSTEM_PROMPT,
+      system: INGEST_SYSTEM_PROMPT,
       messages: [
         { role: "user", content: userPrompt }
       ],
@@ -111,16 +187,100 @@ async function callAnthropic(settings, userPrompt) {
     throw new Error("Failed to parse JSON from Anthropic response");
   }
 }
-var import_obsidian2, SYSTEM_PROMPT;
+async function callOllamaQuery(settings, systemPrompt, userPrompt) {
+  let endpoint = settings.ollamaEndpoint || "http://localhost:11434";
+  if (endpoint.endsWith("/")) {
+    endpoint = endpoint.slice(0, -1);
+  }
+  const response = await (0, import_obsidian2.requestUrl)({
+    url: `${endpoint}/api/chat`,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: settings.model,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt }
+      ],
+      stream: false,
+      options: {
+        temperature: 0.7
+      }
+    })
+  });
+  if (response.status !== 200) {
+    throw new Error(`Ollama Error: ${response.text}`);
+  }
+  return response.json.message.content;
+}
+async function callOpenAIQuery(settings, systemPrompt, userPrompt) {
+  if (!settings.apiKey)
+    throw new Error("OpenAI API key is missing");
+  const response = await (0, import_obsidian2.requestUrl)({
+    url: "https://api.openai.com/v1/chat/completions",
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${settings.apiKey}`
+    },
+    body: JSON.stringify({
+      model: settings.model,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt }
+      ],
+      temperature: 0.7
+    })
+  });
+  if (response.status !== 200) {
+    throw new Error(`OpenAI Error: ${response.text}`);
+  }
+  return response.json.choices[0].message.content;
+}
+async function callAnthropicQuery(settings, systemPrompt, userPrompt) {
+  if (!settings.apiKey)
+    throw new Error("Anthropic API key is missing");
+  const response = await (0, import_obsidian2.requestUrl)({
+    url: "https://api.anthropic.com/v1/messages",
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": settings.apiKey,
+      "anthropic-version": "2023-06-01"
+    },
+    body: JSON.stringify({
+      model: settings.model,
+      system: systemPrompt,
+      messages: [
+        { role: "user", content: userPrompt }
+      ],
+      max_tokens: 4e3,
+      temperature: 0.7
+    })
+  });
+  if (response.status !== 200) {
+    throw new Error(`Anthropic Error: ${response.text}`);
+  }
+  return response.json.content[0].text;
+}
+var import_obsidian2, INGEST_SYSTEM_PROMPT;
 var init_llm = __esm({
   "llm.ts"() {
     import_obsidian2 = require("obsidian");
-    SYSTEM_PROMPT = `You are an expert knowledge base maintainer acting as an "LLM Wiki Forge".
-Your job is to read a raw source document, extract its key information, and integrate it into a personal wiki.
+    INGEST_SYSTEM_PROMPT = `You are an expert knowledge base maintainer acting as an "LLM Wiki Forge".
+Your job is to read a raw source document, extract its key information, and integrate it into a personal Obsidian wiki.
+
+You MUST follow these rules carefully:
+- Always use standard Obsidian \`[[Wikilinks]]\` for concepts, people, and topics.
+- Always include valid YAML Frontmatter at the very top of \`wikiContent\` starting with \`---\` and ending with \`---\`.
+- In the Frontmatter, include fields like \`type: source-summary\`, \`tags: [...]\`, and \`source: [filename]\`.
+- Make the summary structured using Markdown headings (e.g., \`## Core Idea\`, \`## Key Takeaways\`).
 
 You should return your answer EXACTLY as a JSON object with four keys:
 1. "suggestedFilename": A short, hyphen-separated filename for the new wiki page (e.g., "concept-attention-mechanism"). Do NOT include the .md extension.
-2. "wikiContent": The full markdown content of the new wiki page. This should include a title, a short summary of the source, the key insights, and cross-references (using [[Double Bracket]] notation) to concepts/entities mentioned. Add YAML frontmatter at the top with "type: source-summary" and "source: [filename]".
+2. "wikiContent": The full markdown content of the new wiki page (including frontmatter and Obsidian wikilinks).
 3. "logEntry": A one-line string to append to the chronological log.md file. Format: "- [YYYY-MM-DD] Ingested | [Source Title] -> [[suggestedFilename]]"
 4. "indexEntry": A one-line string to insert into the index.md file. Format: "- [[suggestedFilename]]: A short one-sentence summary of what this page is about."
 
@@ -143,6 +303,8 @@ var VIEW_TYPE_LLM_WIKI = "llm-wiki-view";
 var LLMWikiView = class extends import_obsidian.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
+    this.activeTab = "ingest";
+    this.chatHistory = [];
     this.plugin = plugin;
   }
   getViewType() {
@@ -154,11 +316,40 @@ var LLMWikiView = class extends import_obsidian.ItemView {
   async onOpen() {
     const container = this.containerEl.children[1];
     container.empty();
-    container.createEl("h3", { text: "Wiki Forge" });
-    const contentDiv = container.createDiv({ cls: "llm-wiki-content" });
-    this.renderSourceFiles(contentDiv);
+    container.createEl("h3", { text: "LLM Wiki Forge" });
+    const tabsContainer = container.createDiv({ cls: "llm-wiki-forge-tabs" });
+    const tabIngest = tabsContainer.createEl("div", { cls: `llm-wiki-forge-tab ${this.activeTab === "ingest" ? "active" : ""}`, text: "Ingest" });
+    const tabQuery = tabsContainer.createEl("div", { cls: `llm-wiki-forge-tab ${this.activeTab === "query" ? "active" : ""}`, text: "Query" });
+    const tabLint = tabsContainer.createEl("div", { cls: `llm-wiki-forge-tab ${this.activeTab === "lint" ? "active" : ""}`, text: "Lint" });
+    const contentContainer = container.createDiv({ cls: "llm-wiki-forge-content-container" });
+    const renderActiveTab = () => {
+      contentContainer.empty();
+      tabIngest.classList.toggle("active", this.activeTab === "ingest");
+      tabQuery.classList.toggle("active", this.activeTab === "query");
+      tabLint.classList.toggle("active", this.activeTab === "lint");
+      if (this.activeTab === "ingest") {
+        this.renderIngestTab(contentContainer);
+      } else if (this.activeTab === "query") {
+        this.renderQueryTab(contentContainer);
+      } else if (this.activeTab === "lint") {
+        this.renderLintTab(contentContainer);
+      }
+    };
+    tabIngest.onclick = () => {
+      this.activeTab = "ingest";
+      renderActiveTab();
+    };
+    tabQuery.onclick = () => {
+      this.activeTab = "query";
+      renderActiveTab();
+    };
+    tabLint.onclick = () => {
+      this.activeTab = "lint";
+      renderActiveTab();
+    };
+    renderActiveTab();
   }
-  async renderSourceFiles(container) {
+  async renderIngestTab(container) {
     container.empty();
     const { sourceFolder } = this.plugin.settings;
     container.createEl("p", { text: `Sources from: ${sourceFolder}` });
@@ -167,31 +358,110 @@ var LLMWikiView = class extends import_obsidian.ItemView {
       container.createEl("p", { text: "No source files found." });
       return;
     }
-    const list = container.createEl("ul");
+    const list = container.createDiv();
     for (const file of files) {
-      const listItem = list.createEl("li", { cls: "llm-wiki-source-item" });
+      const listItem = list.createDiv({ cls: "llm-wiki-source-item" });
       listItem.style.display = "flex";
       listItem.style.justifyContent = "space-between";
-      listItem.style.marginBottom = "5px";
+      listItem.style.alignItems = "center";
       const nameSpan = listItem.createEl("span", { text: file.name });
       nameSpan.style.cursor = "pointer";
       nameSpan.onclick = () => {
         this.app.workspace.getLeaf(false).openFile(file);
       };
-      const ingestBtn = listItem.createEl("button", { text: "Ingest" });
+      const actionDiv = listItem.createDiv();
+      const statusSpan = actionDiv.createEl("span", { text: "", cls: "ingest-status" });
+      statusSpan.style.marginRight = "8px";
+      statusSpan.style.fontSize = "0.8em";
+      statusSpan.style.color = "var(--text-muted)";
+      const ingestBtn = actionDiv.createEl("button", { text: "Ingest" });
       ingestBtn.onclick = async () => {
         ingestBtn.disabled = true;
-        ingestBtn.innerText = "Ingesting...";
+        statusSpan.innerText = "Reading...";
         try {
-          await this.plugin.ingestSource(file);
+          await this.plugin.ingestSource(file, (status) => {
+            statusSpan.innerText = status;
+          });
+          statusSpan.innerText = "Done";
+          statusSpan.style.color = "var(--text-success)";
         } catch (e) {
           console.error("Ingest failed", e);
+          statusSpan.innerText = "Failed";
+          statusSpan.style.color = "var(--text-error)";
         } finally {
           ingestBtn.disabled = false;
-          ingestBtn.innerText = "Ingest";
+          ingestBtn.innerText = "Re-Ingest";
         }
       };
     }
+  }
+  async renderQueryTab(container) {
+    container.empty();
+    const messagesContainer = container.createDiv({ cls: "llm-wiki-chat-messages" });
+    for (const msg of this.chatHistory) {
+      messagesContainer.createDiv({
+        cls: `llm-wiki-chat-message ${msg.role}`,
+        text: msg.content
+      });
+    }
+    const inputContainer = container.createDiv({ cls: "llm-wiki-chat-input-container" });
+    inputContainer.style.display = "flex";
+    inputContainer.style.gap = "8px";
+    inputContainer.style.marginTop = "auto";
+    const inputEl = inputContainer.createEl("textarea", { cls: "llm-wiki-chat-input" });
+    inputEl.placeholder = "Ask your wiki something...";
+    inputEl.style.flexGrow = "1";
+    inputEl.style.resize = "vertical";
+    const sendBtn = inputContainer.createEl("button", { text: "Send" });
+    const handleSend = async () => {
+      const text = inputEl.value.trim();
+      if (!text)
+        return;
+      inputEl.value = "";
+      sendBtn.disabled = true;
+      this.chatHistory.push({ role: "user", content: text });
+      messagesContainer.createDiv({ cls: "llm-wiki-chat-message user", text });
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+      const assistantMsgDiv = messagesContainer.createDiv({ cls: "llm-wiki-chat-message assistant", text: "Thinking..." });
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+      await this.plugin.handleQuery(text, (response) => {
+        assistantMsgDiv.innerText = response;
+        this.chatHistory.push({ role: "assistant", content: response });
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+      });
+      sendBtn.disabled = false;
+    };
+    sendBtn.onclick = handleSend;
+    inputEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        handleSend();
+      }
+    });
+  }
+  async renderLintTab(container) {
+    container.empty();
+    container.createEl("p", { text: "Run a Health Check on your Wiki to find contradictions, orphan pages, and missing links." });
+    const btnDiv = container.createDiv();
+    btnDiv.style.marginBottom = "16px";
+    const runBtn = btnDiv.createEl("button", { text: "Run Health Check" });
+    const resultsContainer = container.createDiv({ cls: "llm-wiki-lint-results" });
+    resultsContainer.style.whiteSpace = "pre-wrap";
+    resultsContainer.style.backgroundColor = "var(--background-secondary)";
+    resultsContainer.style.padding = "12px";
+    resultsContainer.style.borderRadius = "8px";
+    resultsContainer.style.display = "none";
+    runBtn.onclick = async () => {
+      runBtn.disabled = true;
+      runBtn.innerText = "Analyzing...";
+      resultsContainer.style.display = "block";
+      resultsContainer.innerText = "Reading index and consulting LLM...";
+      await this.plugin.handleLint((response) => {
+        resultsContainer.innerText = response;
+      });
+      runBtn.disabled = false;
+      runBtn.innerText = "Run Health Check";
+    };
   }
   async onClose() {
   }
@@ -202,6 +472,7 @@ var DEFAULT_SETTINGS = {
   apiKey: "",
   provider: "openai",
   model: "gpt-4o-mini",
+  ollamaEndpoint: "http://localhost:11434",
   sourceFolder: "_source",
   wikiFolder: "wiki",
   indexFile: "wiki/index.md",
@@ -244,12 +515,51 @@ var LLMWikiForgePlugin = class extends import_obsidian3.Plugin {
       workspace.revealLeaf(leaf);
     }
   }
-  async ingestSource(file) {
+  async handleLint(onUpdate) {
+    try {
+      const { callLLMForLint: callLLMForLint2 } = await Promise.resolve().then(() => (init_llm(), llm_exports));
+      let indexContent = "Index file not found or empty.";
+      const indexFile = this.app.vault.getAbstractFileByPath(this.settings.indexFile);
+      if (indexFile) {
+        indexContent = await this.app.vault.read(indexFile);
+      } else {
+        onUpdate("No index file found to analyze.");
+        return;
+      }
+      const response = await callLLMForLint2(this.settings, indexContent);
+      onUpdate(response);
+    } catch (e) {
+      console.error("Lint error:", e);
+      onUpdate(`Error: ${e.message}`);
+    }
+  }
+  async handleQuery(query, onUpdate) {
+    try {
+      const { callLLMForQuery: callLLMForQuery2 } = await Promise.resolve().then(() => (init_llm(), llm_exports));
+      let indexContent = "Index file not found or empty.";
+      const indexFile = this.app.vault.getAbstractFileByPath(this.settings.indexFile);
+      if (indexFile) {
+        indexContent = await this.app.vault.read(indexFile);
+      }
+      const response = await callLLMForQuery2(this.settings, query, indexContent);
+      onUpdate(response);
+    } catch (e) {
+      console.error("Query error:", e);
+      onUpdate(`Error: ${e.message}`);
+    }
+  }
+  async ingestSource(file, onStatus) {
     new import_obsidian3.Notice(`Ingesting ${file.name}...`);
+    if (onStatus)
+      onStatus("Reading File...");
     try {
       const content = await this.app.vault.read(file);
       const { callLLMForIngest: callLLMForIngest2 } = await Promise.resolve().then(() => (init_llm(), llm_exports));
+      if (onStatus)
+        onStatus("Calling LLM...");
       const result = await callLLMForIngest2(this.settings, content, file.name);
+      if (onStatus)
+        onStatus("Writing to Wiki...");
       const wikiFolderPath = this.settings.wikiFolder;
       if (!this.app.vault.getAbstractFileByPath(wikiFolderPath)) {
         await this.app.vault.createFolder(wikiFolderPath);
@@ -313,15 +623,22 @@ var LLMWikiForgeSettingTab = class extends import_obsidian3.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    new import_obsidian3.Setting(containerEl).setName("Provider").setDesc("Choose your LLM provider").addDropdown((drop) => drop.addOption("openai", "OpenAI").addOption("anthropic", "Anthropic").setValue(this.plugin.settings.provider).onChange(async (value) => {
+    new import_obsidian3.Setting(containerEl).setName("Provider").setDesc("Choose your LLM provider").addDropdown((drop) => drop.addOption("openai", "OpenAI").addOption("anthropic", "Anthropic").addOption("ollama", "Ollama (Local)").setValue(this.plugin.settings.provider).onChange(async (value) => {
       this.plugin.settings.provider = value;
       await this.plugin.saveSettings();
       this.display();
     }));
-    new import_obsidian3.Setting(containerEl).setName("API Key").setDesc("Your API key for the chosen provider").addText((text) => text.setPlaceholder("Enter your API key").setValue(this.plugin.settings.apiKey).onChange(async (value) => {
-      this.plugin.settings.apiKey = value;
-      await this.plugin.saveSettings();
-    }));
+    if (this.plugin.settings.provider === "ollama") {
+      new import_obsidian3.Setting(containerEl).setName("Ollama Endpoint").setDesc("Default is http://localhost:11434").addText((text) => text.setPlaceholder("http://localhost:11434").setValue(this.plugin.settings.ollamaEndpoint).onChange(async (value) => {
+        this.plugin.settings.ollamaEndpoint = value;
+        await this.plugin.saveSettings();
+      }));
+    } else {
+      new import_obsidian3.Setting(containerEl).setName("API Key").setDesc("Your API key for the chosen provider").addText((text) => text.setPlaceholder("Enter your API key").setValue(this.plugin.settings.apiKey).onChange(async (value) => {
+        this.plugin.settings.apiKey = value;
+        await this.plugin.saveSettings();
+      }));
+    }
     new import_obsidian3.Setting(containerEl).setName("Model").setDesc("Model to use (e.g. gpt-4o, claude-3-5-sonnet-20240620)").addText((text) => text.setPlaceholder("Enter model name").setValue(this.plugin.settings.model).onChange(async (value) => {
       this.plugin.settings.model = value;
       await this.plugin.saveSettings();

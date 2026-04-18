@@ -3,8 +3,9 @@ import { LLMWikiView, VIEW_TYPE_LLM_WIKI } from './view';
 
 export interface LLMWikiForgeSettings {
     apiKey: string;
-    provider: 'openai' | 'anthropic';
+    provider: 'openai' | 'anthropic' | 'ollama';
     model: string;
+    ollamaEndpoint: string;
     sourceFolder: string;
     wikiFolder: string;
     indexFile: string;
@@ -15,6 +16,7 @@ const DEFAULT_SETTINGS: LLMWikiForgeSettings = {
     apiKey: '',
     provider: 'openai',
     model: 'gpt-4o-mini',
+    ollamaEndpoint: 'http://localhost:11434',
     sourceFolder: '_source',
     wikiFolder: 'wiki',
     indexFile: 'wiki/index.md',
@@ -73,14 +75,56 @@ export default class LLMWikiForgePlugin extends Plugin {
         }
     }
 
-    async ingestSource(file: TFile) {
+    async handleLint(onUpdate: (text: string) => void) {
+        try {
+            const { callLLMForLint } = await import('./llm');
+            let indexContent = "Index file not found or empty.";
+
+            const indexFile = this.app.vault.getAbstractFileByPath(this.settings.indexFile) as TFile;
+            if (indexFile) {
+                indexContent = await this.app.vault.read(indexFile);
+            } else {
+                onUpdate("No index file found to analyze.");
+                return;
+            }
+
+            const response = await callLLMForLint(this.settings, indexContent);
+            onUpdate(response);
+        } catch(e) {
+            console.error("Lint error:", e);
+            onUpdate(`Error: ${e.message}`);
+        }
+    }
+
+    async handleQuery(query: string, onUpdate: (text: string) => void) {
+        try {
+            const { callLLMForQuery } = await import('./llm');
+            let indexContent = "Index file not found or empty.";
+
+            const indexFile = this.app.vault.getAbstractFileByPath(this.settings.indexFile) as TFile;
+            if (indexFile) {
+                indexContent = await this.app.vault.read(indexFile);
+            }
+
+            const response = await callLLMForQuery(this.settings, query, indexContent);
+            onUpdate(response);
+        } catch(e) {
+            console.error("Query error:", e);
+            onUpdate(`Error: ${e.message}`);
+        }
+    }
+
+    async ingestSource(file: TFile, onStatus?: (status: string) => void) {
         new Notice(`Ingesting ${file.name}...`);
+        if(onStatus) onStatus("Reading File...");
         try {
             const content = await this.app.vault.read(file);
             const { callLLMForIngest } = await import('./llm');
 
+            if(onStatus) onStatus("Calling LLM...");
             const result = await callLLMForIngest(this.settings, content, file.name);
 
+            if(onStatus) onStatus("Writing to Wiki...");
             // 1. Ensure wiki folder exists
             const wikiFolderPath = this.settings.wikiFolder;
             if (!(this.app.vault.getAbstractFileByPath(wikiFolderPath))) {
@@ -169,23 +213,37 @@ class LLMWikiForgeSettingTab extends PluginSettingTab {
             .addDropdown(drop => drop
                 .addOption('openai', 'OpenAI')
                 .addOption('anthropic', 'Anthropic')
+                .addOption('ollama', 'Ollama (Local)')
                 .setValue(this.plugin.settings.provider)
-                .onChange(async (value: 'openai' | 'anthropic') => {
+                .onChange(async (value: 'openai' | 'anthropic' | 'ollama') => {
                     this.plugin.settings.provider = value;
                     await this.plugin.saveSettings();
-                    this.display(); // Redraw to update model defaults
+                    this.display(); // Redraw to update settings fields
                 }));
 
-        new Setting(containerEl)
-            .setName('API Key')
-            .setDesc('Your API key for the chosen provider')
-            .addText(text => text
-                .setPlaceholder('Enter your API key')
-                .setValue(this.plugin.settings.apiKey)
-                .onChange(async (value) => {
-                    this.plugin.settings.apiKey = value;
-                    await this.plugin.saveSettings();
-                }));
+        if (this.plugin.settings.provider === 'ollama') {
+            new Setting(containerEl)
+                .setName('Ollama Endpoint')
+                .setDesc('Default is http://localhost:11434')
+                .addText(text => text
+                    .setPlaceholder('http://localhost:11434')
+                    .setValue(this.plugin.settings.ollamaEndpoint)
+                    .onChange(async (value) => {
+                        this.plugin.settings.ollamaEndpoint = value;
+                        await this.plugin.saveSettings();
+                    }));
+        } else {
+            new Setting(containerEl)
+                .setName('API Key')
+                .setDesc('Your API key for the chosen provider')
+                .addText(text => text
+                    .setPlaceholder('Enter your API key')
+                    .setValue(this.plugin.settings.apiKey)
+                    .onChange(async (value) => {
+                        this.plugin.settings.apiKey = value;
+                        await this.plugin.saveSettings();
+                    }));
+        }
 
         new Setting(containerEl)
             .setName('Model')
